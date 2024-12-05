@@ -7,7 +7,9 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 
+	"github.com/robherley/webfunc-go/internal/virtfs"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 	"github.com/tetratelabs/wazero/sys"
@@ -46,15 +48,13 @@ func (s *WazeroSandbox) Handler(w http.ResponseWriter, r *http.Request) error {
 
 	tee := io.MultiWriter(w, s.stdout)
 
-	sandboxFS := NewFS()
-	sandboxFS.AddFile("hello.txt", []byte("i'm a fake file in the sandbox"), true)
-	sandboxFS.AddFile("status_code", nil, false)
-
 	fsConfig := wazero.NewFSConfig().
-		WithFSMount(sandboxFS, "/var/webfunc")
+		WithFSMount(FS(r), "/var/webfunc")
 
 	cfg := wazero.NewModuleConfig().
 		WithEnv("WEBFUNC", "1").
+		WithEnv("WEBFUNC_MODE", "HTTP").
+		WithEnv("WEBFUNC_DIR", "/var/webfunc").
 		WithFSConfig(fsConfig).
 		WithStdin(r.Body).
 		WithStdout(tee).
@@ -85,4 +85,24 @@ func (s *WazeroSandbox) Stderr() string {
 
 func (s *WazeroSandbox) ExitCode() uint32 {
 	return s.exitCode
+}
+
+func FS(r *http.Request) *virtfs.FS {
+	fs := virtfs.New()
+
+	headers := strings.Builder{}
+	for k, v := range r.Header {
+		for _, vv := range v {
+			headers.WriteString(k)
+			headers.WriteString(": ")
+			headers.WriteString(vv)
+			headers.WriteRune('\n')
+		}
+	}
+
+	fs.Add(virtfs.NewFile("headers", []byte(headers.String())))
+	fs.Add(virtfs.NewFile("method", []byte(r.Method)))
+	fs.Add(virtfs.NewFile("path", []byte(r.URL.Path)))
+	fs.Add(virtfs.NewFile("query", []byte(r.URL.Query().Encode())))
+	return fs
 }
